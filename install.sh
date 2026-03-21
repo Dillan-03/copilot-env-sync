@@ -1,29 +1,40 @@
 #!/bin/sh
-# install.sh — Install copilot-sync into ~/.local/bin
+# install.sh — Install copilot-sync to ~/.local/bin
+# Usage: curl -fsSL https://raw.githubusercontent.com/Dillan-03/copilot-env-sync/main/install.sh | sh
+
 set -e
 
+REPO_URL="https://raw.githubusercontent.com/Dillan-03/copilot-env-sync/main"
 INSTALL_DIR="$HOME/.local/bin"
-BIN="$INSTALL_DIR/copilot-sync"
+BIN_NAME="copilot-sync"
 
+die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+# Ensure install dir exists
 mkdir -p "$INSTALL_DIR"
 
-# Copy the script
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cp "$SCRIPT_DIR/bin/copilot-sync" "$BIN"
-chmod +x "$BIN"
+# Download or copy the binary
+if [ -f "$(dirname "$0")/bin/$BIN_NAME" ]; then
+  # Running from a cloned repo
+  cp "$(dirname "$0")/bin/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+else
+  # Downloading from GitHub
+  command -v curl >/dev/null 2>&1 || die "curl is required"
+  curl -fsSL "$REPO_URL/bin/$BIN_NAME" -o "$INSTALL_DIR/$BIN_NAME"
+fi
 
-printf '✓ Installed copilot-sync to %s\n' "$BIN"
+chmod +x "$INSTALL_DIR/$BIN_NAME"
+printf '\033[32m✓\033[0m Installed %s to %s\n' "$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
 
-# PATH check
+# Check PATH
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *)
-    printf '\n! %s is not in your PATH.\n' "$INSTALL_DIR"
-    printf '  Add this to your ~/.zshrc or ~/.bashrc:\n'
-    printf '    export PATH="$HOME/.local/bin:$PATH"\n'
-    printf '  Then: source ~/.zshrc\n'
+    printf '\n\033[33m!\033[0m %s is not in your PATH.\n' "$INSTALL_DIR"
+    printf '  Add this to your shell config (~/.zshrc or ~/.bashrc):\n'
+    printf '  \033[36mexport PATH="$HOME/.local/bin:$PATH"\033[0m\n\n'
     ;;
 esac
 
 printf '\nGet started:\n'
-printf '  copilot-sync init\n'
+printf '  \033[36mcopilot-sync init\033[0m\n'

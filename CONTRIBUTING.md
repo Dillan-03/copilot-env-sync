@@ -1,66 +1,62 @@
 # Contributing to copilot-env-sync
 
-Thanks for your interest! This project is intentionally small and hackable.
+Thanks for wanting to contribute! This project is intentionally small and focused — contributions that keep it simple are most welcome.
 
-## Project Structure
+## What we welcome
 
-```
-copilot-env-sync/
-├── bin/
-│   └── copilot-sync      # The main CLI script (POSIX sh)
-├── examples/
-│   └── config.json       # Example config file
-├── install.sh            # Installer script
-├── README.md
-└── CONTRIBUTING.md
-```
+- Bug fixes
+- Support for new Copilot CLI features (new config fields, commands)
+- Better error messages and UX
+- Docs improvements
+- Test scripts
 
-## How It Works
+## What we're careful about
 
-1. `copilot plugin list` — captures installed plugins
-2. Config is written to `~/.copilot-sync/config.json` as a git repo
-3. `push` stages + commits + pushes to `origin`
-4. `pull` clones/pulls the repo, then runs `copilot plugin install` for anything missing
+- No runtime dependencies beyond `git`, `copilot`, and `python3`
+- No lock-in to any cloud service
+- POSIX-compatible shell where possible
 
-The entire tool is one POSIX shell script with no external dependencies beyond `git` and `copilot`.
-
-## Development Setup
+## Getting started
 
 ```sh
 git clone https://github.com/Dillan-03/copilot-env-sync.git
 cd copilot-env-sync
-
-# Test locally without installing
-sh bin/copilot-sync help
-sh bin/copilot-sync status
+sh install.sh        # install copilot-sync locally
+copilot-sync help    # verify it works
 ```
 
-## Good First Contributions
+## Project structure
 
-### Agent sync
-The `agents` array in `config.json` is scaffolded but not yet implemented. A useful first PR would read agent files from `~/.copilot/` and snapshot them into the config.
+```
+copilot-env-sync/
+ ├── bin/
+ │    └── copilot-sync     # The CLI — POSIX sh + python3 for JSON
+ ├── examples/
+ │    └── config.json      # Example sync config
+ ├── install.sh            # One-line installer
+ ├── README.md
+ └── CONTRIBUTING.md
+```
 
-### Profile support
-Add a `--profile <name>` flag so users can maintain separate `work.json` and `personal.json` configs.
+## Making changes
 
-### Other tools
-Add detection + sync for Claude Code (`.claude/`), Cursor (`.cursor/`), or Codex CLI (`.codex/`).
-
-### Better diff output
-`copilot-sync status` could output a cleaner visual diff — colour-coded additions, removals, and untracked plugins.
-
-## Guidelines
-
-- Keep the script POSIX-compliant (`#!/bin/sh`, no bashisms)
-- No new runtime dependencies — `git` and `copilot` are the only requirements
-- One command per function, named `cmd_<name>`
-- Add a row to the commands table in README.md for any new command
-- Test on both macOS and Linux if possible
+1. Edit `bin/copilot-sync`
+2. Test manually:
+   ```sh
+   sh bin/copilot-sync help
+   sh bin/copilot-sync status
+   ```
+3. Verify syntax: `sh -n bin/copilot-sync`
 
 ## Submitting a PR
 
-1. Fork the repo
-2. Create a branch: `git checkout -b feat/my-contribution`
-3. Make your changes
-4. Test with `sh bin/copilot-sync help` and the relevant subcommand
-5. Open a PR with a clear description of what it does and why
+- Keep commits small and focused
+- Use conventional commit messages: `fix:`, `feat:`, `docs:`
+- Update `README.md` if you add a feature
+
+## Good first issues
+
+- Add `--dry-run` flag to `pull` command
+- Add `copilot-sync list` to show config contents without running status
+- Add MCP server config sync (`~/.copilot/mcp-config.json`)
+- Write a test script that validates the CLI against a real Copilot install
