@@ -1,0 +1,22 @@
+{
+  "version": "2",
+  "updated_at": "2024-01-01T00:00:00Z",
+  "updated_from": "my-macbook",
+  "model": "claude-sonnet-4.6",
+  "marketplaces": [
+    {
+      "name": "impeccable",
+      "source": "pbakaus/impeccable"
+    },
+    {
+      "name": "anthropic-agent-skills",
+      "source": "anthropics/skills"
+    }
+  ],
+  "plugins": [
+    "frontend-design@claude-code-plugins",
+    "feature-dev@claude-code-plugins",
+    "impeccable@impeccable"
+  ],
+  "agents": []
+}

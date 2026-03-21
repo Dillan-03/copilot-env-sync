@@ -1,0 +1,451 @@
+#!/bin/sh
+# copilot-sync — Sync your Copilot CLI environment across machines
+#
+# Syncs everything from ~/.copilot/config.json:
+#   • Plugins (and the skills/agents they contain)
+#   • Custom marketplaces / registries
+#   • Model preference
+#
+# Config is stored in ~/.copilot-sync/ as a git repo.
+# Set COPILOT_SYNC_DIR env var to override the default location.
+
+set -e
+
+SYNC_DIR="${COPILOT_SYNC_DIR:-$HOME/.copilot-sync}"
+CONFIG_FILE="$SYNC_DIR/config.json"
+COPILOT_CONFIG="$HOME/.copilot/config.json"
+
+# Built-in marketplaces — never need to be synced
+BUILTIN_MKTS="copilot-plugins awesome-copilot"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+die()         { printf 'error: %s\n' "$1" >&2; exit 1; }
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed."; }
+info()        { printf '  \033[34m→\033[0m %s\n' "$1"; }
+success()     { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warn()        { printf '  \033[33m!\033[0m %s\n' "$1"; }
+
+require_python() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required but not found. Install it and retry."
+}
+
+# ── Read from ~/.copilot/config.json ─────────────────────────────────────────
+
+# Output: one "name@marketplace" per line
+read_installed_plugins() {
+  require_python
+  [ -f "$COPILOT_CONFIG" ] || return 0
+  python3 - "$COPILOT_CONFIG" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        c = json.load(f)
+    for p in c.get('installed_plugins', []):
+        name = p.get('name', '')
+        mkt  = p.get('marketplace', '')
+        if name and mkt:
+            print(f"{name}@{mkt}")
+except Exception:
+    pass
+PYEOF
+}
+
+# Output: one "name=owner/repo" per line (custom marketplaces only — not builtins)
+read_custom_marketplaces() {
+  require_python
+  [ -f "$COPILOT_CONFIG" ] || return 0
+  BUILTIN="$BUILTIN_MKTS" python3 - "$COPILOT_CONFIG" <<'PYEOF'
+import json, sys, os
+BUILTIN = set(os.environ.get('BUILTIN', '').split())
+try:
+    with open(sys.argv[1]) as f:
+        c = json.load(f)
+    for name, v in c.get('marketplaces', {}).items():
+        if name not in BUILTIN:
+            repo = v.get('source', {}).get('repo', '')
+            if repo:
+                print(f"{name}={repo}")
+except Exception:
+    pass
+PYEOF
+}
+
+# Output: model name (e.g. claude-sonnet-4.6)
+read_model() {
+  require_python
+  [ -f "$COPILOT_CONFIG" ] || return 0
+  python3 - "$COPILOT_CONFIG" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        c = json.load(f)
+    model = c.get('model', '')
+    if model:
+        print(model)
+except Exception:
+    pass
+PYEOF
+}
+
+# ── Write sync config ─────────────────────────────────────────────────────────
+
+_write_config() {
+  require_python
+  TIMESTAMP="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  HOSTNAME_VAL="$(hostname 2>/dev/null || printf 'unknown')"
+  PLUGINS="$(read_installed_plugins)"
+  MARKETPLACES="$(read_custom_marketplaces)"
+  MODEL="$(read_model)"
+
+  # Pass multi-line vars via temp files to avoid shell quoting issues
+  TMPDIR_SYNC="$(mktemp -d)"
+  printf '%s\n' "$PLUGINS"      > "$TMPDIR_SYNC/plugins.txt"
+  printf '%s\n' "$MARKETPLACES" > "$TMPDIR_SYNC/mkts.txt"
+
+  python3 - "$CONFIG_FILE" "$TIMESTAMP" "$HOSTNAME_VAL" "$MODEL" \
+    "$TMPDIR_SYNC/plugins.txt" "$TMPDIR_SYNC/mkts.txt" <<'PYEOF'
+import json, sys, os
+
+config_file  = sys.argv[1]
+timestamp    = sys.argv[2]
+hostname     = sys.argv[3]
+model        = sys.argv[4]
+
+with open(sys.argv[5]) as f:
+    plugins = [l.strip() for l in f if l.strip()]
+with open(sys.argv[6]) as f:
+    mkt_lines = [l.strip() for l in f if l.strip()]
+
+marketplace_list = []
+for line in mkt_lines:
+    if '=' in line:
+        name, repo = line.split('=', 1)
+        marketplace_list.append({'name': name.strip(), 'source': repo.strip()})
+
+config = {
+    'version': '2',
+    'updated_at': timestamp,
+    'updated_from': hostname,
+    'model': model,
+    'marketplaces': marketplace_list,
+    'plugins': plugins,
+    'agents': []
+}
+
+os.makedirs(os.path.dirname(config_file), exist_ok=True)
+with open(config_file, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+PYEOF
+  rm -rf "$TMPDIR_SYNC"
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+cmd_init() {
+  require_cmd git
+  require_cmd copilot
+
+  if [ -d "$SYNC_DIR" ] && [ -f "$CONFIG_FILE" ]; then
+    warn "Already initialised at $SYNC_DIR"
+    printf '  Run \033[36mcopilot-sync push\033[0m to update your config.\n'
+    exit 0
+  fi
+
+  printf '\033[1mInitialising copilot-sync\033[0m\n'
+  info "Sync directory: $SYNC_DIR"
+
+  mkdir -p "$SYNC_DIR"
+  git -C "$SYNC_DIR" init -q
+
+  _write_config
+  success "Config written to $CONFIG_FILE"
+
+  git -C "$SYNC_DIR" add -A
+  git -C "$SYNC_DIR" commit -q -m "init: snapshot Copilot environment"
+  success "Initial commit created"
+
+  printf '\n\033[1mWhat was snapshotted:\033[0m\n'
+  _show_summary
+
+  printf '\n\033[1mNext steps:\033[0m\n'
+  printf '  1. Push to GitHub so you can sync across machines:\n'
+  printf '     \033[36mcd %s\033[0m\n' "$SYNC_DIR"
+  printf '     \033[36mgit remote add origin https://github.com/<you>/copilot-env.git\033[0m\n'
+  printf '     \033[36mgit push -u origin main\033[0m\n'
+  printf '  2. On another machine:\n'
+  printf '     \033[36mcopilot-sync pull https://github.com/<you>/copilot-env.git\033[0m\n'
+}
+
+cmd_push() {
+  [ -d "$SYNC_DIR" ] || die "Not initialised. Run 'copilot-sync init' first."
+  require_cmd copilot
+
+  MSG="${1:-sync: update environment snapshot}"
+
+  printf '\033[1mUpdating config\033[0m\n'
+  _write_config
+  success "Config updated"
+
+  git -C "$SYNC_DIR" add -A
+  if git -C "$SYNC_DIR" diff --cached --quiet; then
+    success "Nothing changed — already in sync"
+    exit 0
+  fi
+
+  git -C "$SYNC_DIR" commit -q -m "$MSG"
+  success "Committed: $MSG"
+
+  if git -C "$SYNC_DIR" remote get-url origin >/dev/null 2>&1; then
+    info "Pushing to remote..."
+    git -C "$SYNC_DIR" push -q
+    success "Pushed — other machines can now run \033[36mcopilot-sync pull\033[0m"
+  else
+    warn "No remote set — config saved locally only"
+    printf '  To push: \033[36mcd %s && git remote add origin <url> && git push -u origin main\033[0m\n' "$SYNC_DIR"
+  fi
+}
+
+cmd_pull() {
+  require_cmd copilot
+  require_python
+
+  REMOTE="${1:-}"
+
+  # Clone or pull from remote if given
+  if [ -n "$REMOTE" ]; then
+    if [ -d "$SYNC_DIR/.git" ]; then
+      info "Pulling latest config from remote..."
+      git -C "$SYNC_DIR" pull --ff-only -q
+    else
+      info "Cloning config from $REMOTE..."
+      git clone -q "$REMOTE" "$SYNC_DIR"
+    fi
+    success "Config fetched"
+  fi
+
+  [ -f "$CONFIG_FILE" ] || die "No config found at $CONFIG_FILE. Run 'copilot-sync init' or pass a remote URL."
+
+  printf '\033[1mApplying config to this machine\033[0m\n'
+
+  # ── Step 1: Restore custom marketplaces ──────────────────────────────────────
+  CURRENT_MKTS="$(copilot plugin marketplace list 2>/dev/null || echo '')"
+
+  python3 - "$CONFIG_FILE" <<'PYEOF' | while IFS='=' read -r mkt_name mkt_source; do
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        c = json.load(f)
+    for m in c.get('marketplaces', []):
+        print(m['name'] + '=' + m['source'])
+except Exception:
+    pass
+PYEOF
+    [ -z "$mkt_name" ] && continue
+    if printf '%s\n' "$CURRENT_MKTS" | grep -qF "$mkt_name"; then
+      info "Marketplace already registered: $mkt_name"
+    else
+      printf '  Registering marketplace \033[36m%s\033[0m (%s)...\n' "$mkt_name" "$mkt_source"
+      copilot plugin marketplace add "$mkt_source" 2>&1 | grep -v '^$' | head -2 || true
+      success "Registered marketplace: $mkt_name"
+    fi
+  done
+
+  # ── Step 2: Install missing plugins (+ their skills and agents) ───────────────
+  INSTALLED="$(copilot plugin list 2>/dev/null | grep '•' | sed 's/.*• //; s/ (.*//')"
+
+  python3 - "$CONFIG_FILE" <<'PYEOF' | while IFS= read -r plugin; do
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        c = json.load(f)
+    for p in c.get('plugins', []):
+        print(p)
+except Exception:
+    pass
+PYEOF
+    [ -z "$plugin" ] && continue
+    if printf '%s\n' "$INSTALLED" | grep -qF "$plugin"; then
+      info "Already installed: $plugin"
+    else
+      printf '  Installing \033[36m%s\033[0m (includes skills & agents)...\n' "$plugin"
+      if copilot plugin install "$plugin" 2>&1 | tail -2; then
+        success "Installed $plugin"
+      else
+        warn "Failed to install $plugin — skipping"
+      fi
+    fi
+  done
+
+  # ── Step 3: Report model ──────────────────────────────────────────────────────
+  CONFIG_MODEL="$(python3 -c "
+import json, sys
+try:
+    with open('$CONFIG_FILE') as f:
+        c = json.load(f)
+    print(c.get('model', ''))
+except: pass
+" 2>/dev/null)"
+  if [ -n "$CONFIG_MODEL" ]; then
+    CURRENT_MODEL="$(read_model)"
+    if [ "$CONFIG_MODEL" = "$CURRENT_MODEL" ]; then
+      info "Model: $CONFIG_MODEL (already active)"
+    else
+      warn "Model in config: \033[36m$CONFIG_MODEL\033[0m — start Copilot with \033[36m--model $CONFIG_MODEL\033[0m to match"
+    fi
+  fi
+
+  printf '\n'
+  success "Environment sync complete"
+}
+
+cmd_status() {
+  [ -f "$CONFIG_FILE" ] || die "No config found. Run 'copilot-sync init' first."
+  require_cmd copilot
+  require_python
+
+  printf '\033[1mEnvironment status\033[0m\n\n'
+
+  # Current state
+  INSTALLED_PLUGINS="$(copilot plugin list 2>/dev/null | grep '•' | sed 's/.*• //; s/ (.*//')"
+  CURRENT_MKTS="$(copilot plugin marketplace list 2>/dev/null || echo '')"
+  CURRENT_MODEL="$(read_model)"
+
+  # Read everything from sync config
+  TMPDIR_STATUS="$(mktemp -d)"
+  python3 - "$CONFIG_FILE" "$TMPDIR_STATUS" <<'PYEOF'
+import json, sys, os
+try:
+    with open(sys.argv[1]) as f:
+        c = json.load(f)
+    outdir = sys.argv[2]
+    with open(f"{outdir}/model.txt", 'w') as f:
+        f.write(c.get('model', ''))
+    with open(f"{outdir}/plugins.txt", 'w') as f:
+        f.write('\n'.join(c.get('plugins', [])))
+    with open(f"{outdir}/mkts.txt", 'w') as f:
+        f.write('\n'.join(m['name'] + '=' + m['source'] for m in c.get('marketplaces', [])))
+except Exception as e:
+    sys.exit(0)
+PYEOF
+
+  CONFIG_MODEL="$(cat "$TMPDIR_STATUS/model.txt" 2>/dev/null || echo '')"
+  CONFIG_PLUGINS="$(cat "$TMPDIR_STATUS/plugins.txt" 2>/dev/null || echo '')"
+  CONFIG_MKTS="$(cat "$TMPDIR_STATUS/mkts.txt" 2>/dev/null || echo '')"
+  rm -rf "$TMPDIR_STATUS"
+
+  # ── Plugins ────────────────────────────────────────────────────────────────────
+  printf '  \033[1m%-42s  %-12s  %s\033[0m\n' "PLUGIN (includes skills & agents)" "IN CONFIG" "INSTALLED"
+  printf '  %-42s  %-12s  %s\n'               "--------------------------------" "---------" "---------"
+
+  if [ -n "$CONFIG_PLUGINS" ]; then
+    printf '%s\n' "$CONFIG_PLUGINS" | while IFS= read -r plugin; do
+      [ -z "$plugin" ] && continue
+      if printf '%s\n' "$INSTALLED_PLUGINS" | grep -qF "$plugin"; then
+        printf '  %-42s  %-12s  \033[32m✓\033[0m\n' "$plugin" "yes"
+      else
+        printf '  %-42s  %-12s  \033[33mmissing\033[0m\n' "$plugin" "yes"
+      fi
+    done
+  fi
+
+  if [ -n "$INSTALLED_PLUGINS" ]; then
+    printf '%s\n' "$INSTALLED_PLUGINS" | while IFS= read -r plugin; do
+      [ -z "$plugin" ] && continue
+      if [ -z "$CONFIG_PLUGINS" ] || ! printf '%s\n' "$CONFIG_PLUGINS" | grep -qF "$plugin"; then
+        printf '  %-42s  %-12s  \033[34muntracked\033[0m\n' "$plugin" "no"
+      fi
+    done
+  fi
+
+  # ── Marketplaces ────────────────────────────────────────────────────────────────
+  if [ -n "$CONFIG_MKTS" ]; then
+    printf '\n  \033[1m%-30s  %-12s  %s\033[0m\n' "MARKETPLACE" "IN CONFIG" "REGISTERED"
+    printf '  %-30s  %-12s  %s\n'                  "-----------" "---------" "----------"
+    printf '%s\n' "$CONFIG_MKTS" | while IFS= read -r mkt; do
+      [ -z "$mkt" ] && continue
+      mkt_name="${mkt%%=*}"
+      mkt_src="${mkt#*=}"
+      if printf '%s\n' "$CURRENT_MKTS" | grep -qF "$mkt_name"; then
+        printf '  %-30s  %-12s  \033[32m✓\033[0m  (%s)\n' "$mkt_name" "yes" "$mkt_src"
+      else
+        printf '  %-30s  %-12s  \033[33mmissing\033[0m  (%s)\n' "$mkt_name" "yes" "$mkt_src"
+      fi
+    done
+  fi
+
+  # ── Model ────────────────────────────────────────────────────────────────────────
+  printf '\n'
+  if [ -n "$CONFIG_MODEL" ]; then
+    if [ "$CONFIG_MODEL" = "$CURRENT_MODEL" ]; then
+      printf '  \033[34m→\033[0m Model: %s \033[32m(matches config)\033[0m\n' "$CONFIG_MODEL"
+    else
+      printf '  \033[33m!\033[0m Model: current=\033[36m%s\033[0m  config=\033[36m%s\033[0m\n' "$CURRENT_MODEL" "$CONFIG_MODEL"
+    fi
+  fi
+
+  # ── Remote ───────────────────────────────────────────────────────────────────────
+  if git -C "$SYNC_DIR" remote get-url origin >/dev/null 2>&1; then
+    info "Remote: $(git -C "$SYNC_DIR" remote get-url origin)"
+  else
+    warn "No remote configured — run: cd $SYNC_DIR && git remote add origin <url>"
+  fi
+}
+
+# Print a brief summary of what's in the current config
+_show_summary() {
+  require_python
+  python3 - "$CONFIG_FILE" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        c = json.load(f)
+    plugins = c.get('plugins', [])
+    mkts    = c.get('marketplaces', [])
+    model   = c.get('model', 'not set')
+    print(f"  plugins      : {len(plugins)} ({', '.join(plugins) if plugins else 'none'})")
+    print(f"  marketplaces : {len(mkts)} ({', '.join(m['name'] for m in mkts) if mkts else 'none'})")
+    print(f"  model        : {model}")
+except Exception:
+    pass
+PYEOF
+}
+
+# ── Usage ─────────────────────────────────────────────────────────────────────
+
+usage() {
+  printf 'copilot-sync — Sync your Copilot CLI environment across machines\n\n'
+  printf 'Syncs: plugins • skills (via plugins) • agents (via plugins) • marketplaces • model\n\n'
+  printf 'Usage:\n'
+  printf '  copilot-sync init                  Snapshot current environment to config\n'
+  printf '  copilot-sync push [message]        Update config and push to remote\n'
+  printf '  copilot-sync pull [remote-url]     Apply config (optionally clone from URL first)\n'
+  printf '  copilot-sync status                Show diff between config and current environment\n'
+  printf '  copilot-sync help                  Show this help\n'
+  printf '\nExamples:\n'
+  printf '  copilot-sync init\n'
+  printf '  copilot-sync push "add: impeccable marketplace"\n'
+  printf '  copilot-sync pull https://github.com/you/copilot-env.git\n'
+  printf '  copilot-sync status\n'
+  printf '\nConfig: %s\n' "$CONFIG_FILE"
+}
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+COMMAND="${1:-help}"
+shift 2>/dev/null || true
+
+case "$COMMAND" in
+  init)           cmd_init ;;
+  push)           cmd_push "$@" ;;
+  pull)           cmd_pull "$@" ;;
+  status)         cmd_status ;;
+  help|--help|-h) usage ;;
+  '')             usage ;;
+  *)
+    printf 'Unknown command: %s\n\n' "$COMMAND" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
