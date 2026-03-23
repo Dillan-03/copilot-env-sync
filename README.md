@@ -8,6 +8,19 @@ No cloud required. No vendor lock-in. Just Git.
 
 ---
 
+## How it works
+
+There are two separate repos involved:
+
+| Repo | What it is |
+|------|-----------|
+| **`copilot-env-sync`** (this repo) | The open-source tool — install it once, it never stores your config |
+| **Your config repo** (e.g. `github.com/<you>/copilot-env`) | Your own private Git repo where your personal Copilot config lives |
+
+When you run `copilot-sync init`, it creates `~/.copilot-sync/` as a local Git repo containing your config snapshot. You then push that to **your own private GitHub repo** to sync it across machines. Your config repo is yours — keep it private.
+
+---
+
 ## What gets synced
 
 | Item | How |
@@ -45,6 +58,8 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Quick Start
 
 **Machine 1 — snapshot and push your setup:**
+
+> **First:** Create a new **private** repo on GitHub (e.g. `copilot-env`) to store your config. Then:
 
 ```sh
 copilot-sync init                          # snapshot current environment
@@ -102,7 +117,7 @@ The config lives at `~/.copilot-sync/config.json` (a git repo):
 
 ## Team workflow
 
-Share the config repo with your team:
+Create a **private repo in your org** (e.g. `github.com/your-org/copilot-env`) and share it with your team. Everyone gets the same plugins, skills, and marketplaces without manual setup.
 
 ```sh
 # Everyone runs once:
