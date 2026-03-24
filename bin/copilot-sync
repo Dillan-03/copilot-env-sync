@@ -1,10 +1,10 @@
 #!/bin/sh
 # copilot-sync — Sync your Copilot CLI environment across machines
 #
-# Syncs everything from ~/.copilot/config.json:
-#   • Plugins (and the skills/agents they contain)
-#   • Custom marketplaces / registries
-#   • Model preference
+# Works with the official GitHub Copilot CLI extension (gh copilot).
+# Tracks a portable config (plugins, marketplaces, model) in a git repo.
+# On pull, displays what needs to be applied since gh copilot does not
+# expose a plugin system for automatic installation.
 #
 # Config is stored in ~/.copilot-sync/ as a git repo.
 # Set COPILOT_SYNC_DIR env var to override the default location.
@@ -22,6 +22,12 @@ BUILTIN_MKTS="copilot-plugins awesome-copilot"
 
 die()         { printf 'error: %s\n' "$1" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed."; }
+
+require_gh_copilot() {
+  require_cmd gh
+  gh extension list 2>/dev/null | grep -qi 'copilot' || \
+    die "'gh copilot' extension is not installed. Run: gh extension install github/gh-copilot"
+}
 info()        { printf '  \033[34m→\033[0m %s\n' "$1"; }
 success()     { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn()        { printf '  \033[33m!\033[0m %s\n' "$1"; }
@@ -145,7 +151,7 @@ PYEOF
 
 cmd_init() {
   require_cmd git
-  require_cmd copilot
+  require_gh_copilot
 
   if [ -d "$SYNC_DIR" ] && [ -f "$CONFIG_FILE" ]; then
     warn "Already initialised at $SYNC_DIR"
@@ -180,7 +186,7 @@ cmd_init() {
 
 cmd_push() {
   [ -d "$SYNC_DIR" ] || die "Not initialised. Run 'copilot-sync init' first."
-  require_cmd copilot
+  require_gh_copilot
 
   MSG="${1:-sync: update environment snapshot}"
 
@@ -208,7 +214,7 @@ cmd_push() {
 }
 
 cmd_pull() {
-  require_cmd copilot
+  require_gh_copilot
   require_python
 
   REMOTE="${1:-}"
@@ -227,56 +233,52 @@ cmd_pull() {
 
   [ -f "$CONFIG_FILE" ] || die "No config found at $CONFIG_FILE. Run 'copilot-sync init' or pass a remote URL."
 
-  printf '\033[1mApplying config to this machine\033[0m\n'
+  printf '\033[1mConfig contents\033[0m\n'
+  printf '\n  \033[33m!\033[0m Note: gh copilot does not expose a plugin or marketplace API.\n'
+  printf '      The items below are recorded in your config for reference.\n'
+  printf '      Apply them manually as needed.\n\n'
 
-  # ── Step 1: Restore custom marketplaces ──────────────────────────────────────
-  CURRENT_MKTS="$(copilot plugin marketplace list 2>/dev/null || echo '')"
-
-  python3 - "$CONFIG_FILE" <<'PYEOF' | while IFS='=' read -r mkt_name mkt_source; do
+  # ── Step 1: List custom marketplaces ─────────────────────────────────────────
+  python3 - "$CONFIG_FILE" <<'PYEOF' | {
 import json, sys
 try:
     with open(sys.argv[1]) as f:
         c = json.load(f)
-    for m in c.get('marketplaces', []):
-        print(m['name'] + '=' + m['source'])
+    mkts = c.get('marketplaces', [])
+    if mkts:
+        print("MARKETPLACES")
+        for m in mkts:
+            print(m['name'] + '=' + m['source'])
 except Exception:
     pass
 PYEOF
-    [ -z "$mkt_name" ] && continue
-    if printf '%s\n' "$CURRENT_MKTS" | grep -qF "$mkt_name"; then
-      info "Marketplace already registered: $mkt_name"
-    else
-      printf '  Registering marketplace \033[36m%s\033[0m (%s)...\n' "$mkt_name" "$mkt_source"
-      copilot plugin marketplace add "$mkt_source" 2>&1 | grep -v '^$' | head -2 || true
-      success "Registered marketplace: $mkt_name"
-    fi
-  done
+    IFS= read -r header && printf '  \033[1m%s\033[0m\n' "$header"
+    while IFS='=' read -r mkt_name mkt_source; do
+      [ -z "$mkt_name" ] && continue
+      printf '    \033[36m%s\033[0m  (%s)\n' "$mkt_name" "$mkt_source"
+    done
+  }
 
-  # ── Step 2: Install missing plugins (+ their skills and agents) ───────────────
-  INSTALLED="$(copilot plugin list 2>/dev/null | grep '•' | sed 's/.*• //; s/ (.*//')"
-
-  python3 - "$CONFIG_FILE" <<'PYEOF' | while IFS= read -r plugin; do
+  # ── Step 2: List plugins ──────────────────────────────────────────────────────
+  python3 - "$CONFIG_FILE" <<'PYEOF' | {
 import json, sys
 try:
     with open(sys.argv[1]) as f:
         c = json.load(f)
-    for p in c.get('plugins', []):
-        print(p)
+    plugins = c.get('plugins', [])
+    if plugins:
+        print("PLUGINS")
+        for p in plugins:
+            print(p)
 except Exception:
     pass
 PYEOF
-    [ -z "$plugin" ] && continue
-    if printf '%s\n' "$INSTALLED" | grep -qF "$plugin"; then
-      info "Already installed: $plugin"
-    else
-      printf '  Installing \033[36m%s\033[0m (includes skills & agents)...\n' "$plugin"
-      if copilot plugin install "$plugin" 2>&1 | tail -2; then
-        success "Installed $plugin"
-      else
-        warn "Failed to install $plugin — skipping"
-      fi
-    fi
-  done
+    IFS= read -r header && printf '\n  \033[1m%s\033[0m\n' "$header"
+    while IFS= read -r plugin; do
+      [ -z "$plugin" ] && continue
+      printf '    \033[36m%s\033[0m\n' "$plugin"
+    done
+  }
 
   # ── Step 3: Report model ──────────────────────────────────────────────────────
   CONFIG_MODEL="$(python3 -c "
@@ -288,29 +290,21 @@ try:
 except: pass
 " 2>/dev/null)"
   if [ -n "$CONFIG_MODEL" ]; then
-    CURRENT_MODEL="$(read_model)"
-    if [ "$CONFIG_MODEL" = "$CURRENT_MODEL" ]; then
-      info "Model: $CONFIG_MODEL (already active)"
-    else
-      warn "Model in config: \033[36m$CONFIG_MODEL\033[0m — start Copilot with \033[36m--model $CONFIG_MODEL\033[0m to match"
-    fi
+    printf '\n  \033[1mMODEL\033[0m\n'
+    printf '    \033[36m%s\033[0m\n' "$CONFIG_MODEL"
   fi
 
   printf '\n'
-  success "Environment sync complete"
+  success "Config applied — review items above and apply manually via gh copilot"
 }
 
 cmd_status() {
   [ -f "$CONFIG_FILE" ] || die "No config found. Run 'copilot-sync init' first."
-  require_cmd copilot
+  require_gh_copilot
   require_python
 
-  printf '\033[1mEnvironment status\033[0m\n\n'
-
-  # Current state
-  INSTALLED_PLUGINS="$(copilot plugin list 2>/dev/null | grep '•' | sed 's/.*• //; s/ (.*//')"
-  CURRENT_MKTS="$(copilot plugin marketplace list 2>/dev/null || echo '')"
-  CURRENT_MODEL="$(read_model)"
+  printf '\033[1mEnvironment status\033[0m\n'
+  printf '  \033[33m!\033[0m gh copilot does not expose a plugin API — showing config contents only.\n\n'
 
   # Read everything from sync config
   TMPDIR_STATUS="$(mktemp -d)"
@@ -336,56 +330,39 @@ PYEOF
   rm -rf "$TMPDIR_STATUS"
 
   # ── Plugins ────────────────────────────────────────────────────────────────────
-  printf '  \033[1m%-42s  %-12s  %s\033[0m\n' "PLUGIN (includes skills & agents)" "IN CONFIG" "INSTALLED"
-  printf '  %-42s  %-12s  %s\n'               "--------------------------------" "---------" "---------"
-
+  printf '  \033[1mPlugins in config:\033[0m\n'
   if [ -n "$CONFIG_PLUGINS" ]; then
     printf '%s\n' "$CONFIG_PLUGINS" | while IFS= read -r plugin; do
       [ -z "$plugin" ] && continue
-      if printf '%s\n' "$INSTALLED_PLUGINS" | grep -qF "$plugin"; then
-        printf '  %-42s  %-12s  \033[32m✓\033[0m\n' "$plugin" "yes"
-      else
-        printf '  %-42s  %-12s  \033[33mmissing\033[0m\n' "$plugin" "yes"
-      fi
+      printf '    \033[36m%s\033[0m\n' "$plugin"
     done
-  fi
-
-  if [ -n "$INSTALLED_PLUGINS" ]; then
-    printf '%s\n' "$INSTALLED_PLUGINS" | while IFS= read -r plugin; do
-      [ -z "$plugin" ] && continue
-      if [ -z "$CONFIG_PLUGINS" ] || ! printf '%s\n' "$CONFIG_PLUGINS" | grep -qF "$plugin"; then
-        printf '  %-42s  %-12s  \033[34muntracked\033[0m\n' "$plugin" "no"
-      fi
-    done
+  else
+    printf '    (none)\n'
   fi
 
   # ── Marketplaces ────────────────────────────────────────────────────────────────
+  printf '\n  \033[1mMarketplaces in config:\033[0m\n'
   if [ -n "$CONFIG_MKTS" ]; then
-    printf '\n  \033[1m%-30s  %-12s  %s\033[0m\n' "MARKETPLACE" "IN CONFIG" "REGISTERED"
-    printf '  %-30s  %-12s  %s\n'                  "-----------" "---------" "----------"
     printf '%s\n' "$CONFIG_MKTS" | while IFS= read -r mkt; do
       [ -z "$mkt" ] && continue
       mkt_name="${mkt%%=*}"
       mkt_src="${mkt#*=}"
-      if printf '%s\n' "$CURRENT_MKTS" | grep -qF "$mkt_name"; then
-        printf '  %-30s  %-12s  \033[32m✓\033[0m  (%s)\n' "$mkt_name" "yes" "$mkt_src"
-      else
-        printf '  %-30s  %-12s  \033[33mmissing\033[0m  (%s)\n' "$mkt_name" "yes" "$mkt_src"
-      fi
+      printf '    \033[36m%s\033[0m  (%s)\n' "$mkt_name" "$mkt_src"
     done
+  else
+    printf '    (none)\n'
   fi
 
   # ── Model ────────────────────────────────────────────────────────────────────────
-  printf '\n'
+  printf '\n  \033[1mModel in config:\033[0m  '
   if [ -n "$CONFIG_MODEL" ]; then
-    if [ "$CONFIG_MODEL" = "$CURRENT_MODEL" ]; then
-      printf '  \033[34m→\033[0m Model: %s \033[32m(matches config)\033[0m\n' "$CONFIG_MODEL"
-    else
-      printf '  \033[33m!\033[0m Model: current=\033[36m%s\033[0m  config=\033[36m%s\033[0m\n' "$CURRENT_MODEL" "$CONFIG_MODEL"
-    fi
+    printf '\033[36m%s\033[0m\n' "$CONFIG_MODEL"
+  else
+    printf '(not set)\n'
   fi
 
   # ── Remote ───────────────────────────────────────────────────────────────────────
+  printf '\n'
   if git -C "$SYNC_DIR" remote get-url origin >/dev/null 2>&1; then
     info "Remote: $(git -C "$SYNC_DIR" remote get-url origin)"
   else
@@ -416,12 +393,13 @@ PYEOF
 
 usage() {
   printf 'copilot-sync — Sync your Copilot CLI environment across machines\n\n'
-  printf 'Syncs: plugins • skills (via plugins) • agents (via plugins) • marketplaces • model\n\n'
+  printf 'Works with the official GitHub Copilot CLI extension (gh copilot).\n'
+  printf 'Tracks plugins, marketplaces, and model preference in a git repo.\n\n'
   printf 'Usage:\n'
   printf '  copilot-sync init                  Snapshot current environment to config\n'
   printf '  copilot-sync push [message]        Update config and push to remote\n'
-  printf '  copilot-sync pull [remote-url]     Apply config (optionally clone from URL first)\n'
-  printf '  copilot-sync status                Show diff between config and current environment\n'
+  printf '  copilot-sync pull [remote-url]     Show config (optionally clone from URL first)\n'
+  printf '  copilot-sync status                Show config contents\n'
   printf '  copilot-sync help                  Show this help\n'
   printf '\nExamples:\n'
   printf '  copilot-sync init\n'

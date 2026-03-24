@@ -4,32 +4,33 @@
 
 `copilot-env-sync` is a lightweight CLI tool that lets developers sync their **Copilot CLI plugins, skills, agents, and custom marketplaces** using a simple, version-controlled configuration.
 
+Works with the official **`gh copilot`** extension (GitHub CLI). No separate `copilot` binary required.
+
 No cloud required. No vendor lock-in. Just Git.
 
 ---
 
-## How it works
+## Compatibility
 
-There are two separate repos involved:
+This tool works with the official GitHub Copilot CLI extension:
 
-| Repo | What it is |
-|------|-----------|
-| **`copilot-env-sync`** (this repo) | The open-source tool — install it once, it never stores your config |
-| **Your config repo** (e.g. `github.com/<you>/copilot-env`) | Your own private Git repo where your personal Copilot config lives |
+```sh
+gh extension install github/gh-copilot
+```
 
-When you run `copilot-sync init`, it creates `~/.copilot-sync/` as a local Git repo containing your config snapshot. You then push that to **your own private GitHub repo** to sync it across machines. Your config repo is yours — keep it private.
+> **Note:** `gh copilot` does not expose a plugin or marketplace API, so the tool cannot automatically install plugins or register marketplaces. Instead, `copilot-sync pull` displays your recorded config so you can apply items manually.
 
 ---
 
-## What gets synced
+## What gets tracked
 
-| Item | How |
-|------|-----|
-| **Plugins** | `feature-dev@claude-code-plugins`, etc. |
-| **Skills** | Bundled in plugins — restored automatically |
-| **Agents** | Bundled in plugins (e.g. `code-reviewer`, `code-architect`) |
-| **Marketplaces** | Custom registries like `impeccable`, `anthropic-agent-skills` |
-| **Model preference** | e.g. `claude-sonnet-4.6` |
+| Item | Notes |
+|------|-------|
+| **Plugins** | e.g. `feature-dev@claude-code-plugins` — displayed on pull for manual installation |
+| **Marketplaces** | Custom registries e.g. `impeccable` — displayed on pull for manual registration |
+| **Model preference** | e.g. `claude-sonnet-4.6` — recorded for reference |
+
+Skills and agents are bundled inside plugins and are not tracked separately.
 
 ---
 
@@ -68,13 +69,13 @@ git remote add origin https://github.com/<you>/copilot-env.git
 git push -u origin main
 ```
 
-**Machine 2 — restore everything:**
+**Machine 2 — view and apply your config:**
 
 ```sh
 copilot-sync pull https://github.com/<you>/copilot-env.git
 ```
 
-That's it. Your plugins, skills, agents, and marketplaces are restored.
+The config is displayed so you can manually apply plugins, marketplaces, and model preferences via `gh copilot`.
 
 ---
 
@@ -83,8 +84,8 @@ That's it. Your plugins, skills, agents, and marketplaces are restored.
 ```sh
 copilot-sync init                 # Snapshot current environment → config
 copilot-sync push [message]       # Update config and push to remote
-copilot-sync pull [remote-url]    # Apply config (clone from URL if needed)
-copilot-sync status               # Compare config vs current environment
+copilot-sync pull [remote-url]    # Show config (clone from URL if needed)
+copilot-sync status               # Show config contents
 copilot-sync help                 # Show all commands
 ```
 
@@ -123,7 +124,7 @@ Create a **private repo in your org** (e.g. `github.com/your-org/copilot-env`) a
 # Everyone runs once:
 copilot-sync pull https://github.com/your-org/copilot-env.git
 
-# When you add a new plugin:
+# When you update your config:
 copilot-sync push "add: security-review plugin"
 # teammates run:
 copilot-sync pull
@@ -134,7 +135,7 @@ copilot-sync pull
 ## Requirements
 
 - `git` (for config versioning)
-- `copilot` CLI (GitHub Copilot CLI)
+- `gh` CLI with `gh copilot` extension (`gh extension install github/gh-copilot`)
 - `python3` (for JSON parsing — available by default on macOS and most Linux distros)
 
 ---
