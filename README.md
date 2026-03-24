@@ -60,6 +60,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 **Machine 1 — snapshot and push your setup:**
 
+> **First:** Create a new **private** repo on GitHub (e.g. `copilot-env`) to store your config. Then:
+
 ```sh
 copilot-sync init                          # snapshot current environment
 cd ~/.copilot-sync
@@ -116,7 +118,7 @@ The config lives at `~/.copilot-sync/config.json` (a git repo):
 
 ## Team workflow
 
-Share the config repo with your team:
+Create a **private repo in your org** (e.g. `github.com/your-org/copilot-env`) and share it with your team. Everyone gets the same plugins, skills, and marketplaces without manual setup.
 
 ```sh
 # Everyone runs once:
